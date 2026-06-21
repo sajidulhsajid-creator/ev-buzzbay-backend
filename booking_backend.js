@@ -1,110 +1,69 @@
 const express = require('express');
 const cors = require('cors');
-const bodyParser = require('body-parser');
-
 const app = express();
-const PORT = process.env.PORT || 3000;
-
-console.log('\n================================================');
-console.log('EV CHARGING NETWORK - BOOKING SYSTEM');
-console.log('================================================');
 
 app.use(cors());
-app.use(bodyParser.json());
+app.use(express.json());
 
 const chargers = [
-  { id: 'locationA', name: 'Charging Station A', location: 'West Footscray Center', maxPower: 7.4, state: { state: '0x02', current: 0, temperature: 25, pilot: 16, rssi: 85, status: 'online' } },
-  { id: 'locationB', name: 'Charging Station B', location: 'Railway Station Area', maxPower: 11, state: { state: '0x02', current: 0, temperature: 24, pilot: 16, rssi: 90, status: 'online' } },
-  { id: 'locationC', name: 'Charging Station C', location: 'Car Park', maxPower: 7.4, state: { state: '0x02', current: 0, temperature: 23, pilot: 16, rssi: 88, status: 'online' } }
+  {id:'locationA',name:'Station A',location:'West Footscray',maxPower:7.4,state:{state:'0x02',current:0,temperature:25,pilot:16,rssi:85,status:'online'}},
+  {id:'locationB',name:'Station B',location:'Railway Station',maxPower:11,state:{state:'0x02',current:0,temperature:24,pilot:16,rssi:90,status:'online'}},
+  {id:'locationC',name:'Station C',location:'Car Park',maxPower:7.4,state:{state:'0x02',current:0,temperature:23,pilot:16,rssi:88,status:'online'}}
 ];
 
 let bookings = [];
-let bookingId = 1;
+let bid = 1;
 
-app.get('/', (req, res) => {
-  res.json({ name: 'EV Charging Booking System', status: 'running' });
-});
-
-app.get('/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
-});
-
-app.get('/api/chargers', (req, res) => {
-  res.json({ success: true, data: chargers });
-});
-
-app.get('/api/chargers/:locationId', (req, res) => {
-  const charger = chargers.find(c => c.id === req.params.locationId);
-  if (!charger) return res.status(404).json({ success: false, error: 'Not found' });
-  res.json({ success: true, data: charger });
+app.get('/', (req, res) => res.json({status:'ok'}));
+app.get('/health', (req, res) => res.json({status:'ok'}));
+app.get('/api/chargers', (req, res) => res.json({success:true,data:chargers}));
+app.get('/api/chargers/:id', (req, res) => {
+  const c = chargers.find(x => x.id === req.params.id);
+  res.json({success:!!c,data:c});
 });
 
 app.post('/api/update-charger', (req, res) => {
-  const { locationId, state, current, temperature, rssi } = req.body;
-  const charger = chargers.find(c => c.id === locationId);
-  if (charger) {
-    if (state) charger.state.state = state;
-    if (current !== undefined) charger.state.current = current;
-    if (temperature !== undefined) charger.state.temperature = temperature;
-    if (rssi !== undefined) charger.state.rssi = rssi;
-    charger.state.status = 'online';
-  }
-  res.json({ success: true, message: 'Updated' });
+  const c = chargers.find(x => x.id === req.body.locationId);
+  if(c && req.body.state) c.state.state = req.body.state;
+  if(c && req.body.current !== undefined) c.state.current = req.body.current;
+  if(c && req.body.temperature !== undefined) c.state.temperature = req.body.temperature;
+  if(c && req.body.rssi !== undefined) c.state.rssi = req.body.rssi;
+  res.json({success:true});
 });
 
-app.get('/api/availability/:locationId/:date', (req, res) => {
-  const filtered = bookings.filter(b => b.locationId === req.params.locationId);
-  res.json({ success: true, bookings: filtered });
+app.get('/api/availability/:loc/:date', (req, res) => {
+  res.json({success:true,bookings:bookings.filter(b => b.locationId === req.params.loc)});
 });
 
 app.post('/api/estimate', (req, res) => {
-  const { chargerPower, batteryCapacity, targetSOC, currentSOC } = req.body;
+  const {chargerPower, batteryCapacity, targetSOC, currentSOC} = req.body;
   const soc = currentSOC || 20;
   const target = targetSOC || 80;
-  const energyNeeded = (batteryCapacity * (target - soc)) / 100;
-  const chargingTime = Math.round((energyNeeded / chargerPower) * 60);
-  res.json({ success: true, chargingTime, energyNeeded: energyNeeded.toFixed(2) });
+  const energy = (batteryCapacity * (target - soc)) / 100;
+  const time = Math.round((energy / chargerPower) * 60);
+  res.json({success:true,chargingTime:time,energyNeeded:energy.toFixed(2)});
 });
 
 app.post('/api/bookings', (req, res) => {
-  const { userId, locationId, startTime, endTime, estimatedChargingTime, targetSOC, notes } = req.body;
-  const booking = { id: bookingId++, userId: userId || 0, locationId, startTime, endTime, estimatedChargingTime: estimatedChargingTime || 60, targetSOC: targetSOC || 80, status: 'confirmed', notes: notes || '', createdAt: new Date().toISOString() };
-  bookings.push(booking);
-  res.json({ success: true, message: 'Booking created', bookingId: booking.id, data: booking });
+  const b = {id:bid++,...req.body,status:'confirmed',createdAt:new Date().toISOString()};
+  bookings.push(b);
+  res.json({success:true,bookingId:b.id,data:b});
 });
 
-app.get('/api/bookings', (req, res) => {
-  res.json({ success: true, data: bookings });
+app.get('/api/bookings', (req, res) => res.json({success:true,data:bookings}));
+app.get('/api/bookings/:id', (req, res) => {
+  const b = bookings.find(x => x.id === parseInt(req.params.id));
+  res.json({success:!!b,data:b});
 });
 
-app.get('/api/bookings/:bookingId', (req, res) => {
-  const booking = bookings.find(b => b.id === parseInt(req.params.bookingId));
-  if (!booking) return res.status(404).json({ success: false, error: 'Not found' });
-  res.json({ success: true, data: booking });
-});
-
-app.patch('/api/bookings/:bookingId', (req, res) => {
-  const booking = bookings.find(b => b.id === parseInt(req.params.bookingId));
-  if (booking) {
-    if (req.body.status) booking.status = req.body.status;
-    if (req.body.notes) booking.notes = req.body.notes;
+app.patch('/api/bookings/:id', (req, res) => {
+  const b = bookings.find(x => x.id === parseInt(req.params.id));
+  if(b) {
+    if(req.body.status) b.status = req.body.status;
+    if(req.body.notes) b.notes = req.body.notes;
   }
-  res.json({ success: true, message: 'Updated' });
+  res.json({success:true});
 });
 
-app.use((err, req, res, next) => {
-  console.error('[Error]', err);
-  res.status(500).json({ success: false, error: 'Server error' });
-});
-
-const server = app.listen(PORT, () => {
-  console.log(`[Server] Running on port ${PORT}`);
-  console.log(`[Server] CORS enabled`);
-  console.log(`[Server] ${chargers.length} chargers loaded`);
-  console.log('\n✅ Booking API ready!');
-});
-
-process.on('SIGINT', () => {
-  server.close();
-  process.exit(0);
-});
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`✅ Server running on port ${PORT}`));
