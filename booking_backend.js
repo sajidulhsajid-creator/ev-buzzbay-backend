@@ -2,7 +2,6 @@ const express = require('express');
 const sqlite3 = require('sqlite3').verbose();
 const cors = require('cors');
 const bodyParser = require('body-parser');
-const WebSocket = require('ws');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -11,180 +10,129 @@ console.log('\n================================================');
 console.log('EV CHARGING NETWORK - BOOKING SYSTEM');
 console.log('================================================');
 
-// Middleware
-app.use(cors());
+// CORS Configuration - Allow GitHub Pages
+const corsOptions = {
+  origin: [
+    'https://sajidulhsajid-creator.github.io',
+    'http://localhost:8000',
+    'http://localhost:3000',
+    '*'
+  ],
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+};
+
+app.use(cors(corsOptions));
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
-// Database Setup
-const db = new sqlite3.Database(':memory:');
-
-db.serialize(() => {
-  // Users table
-  db.run(`
-    CREATE TABLE IF NOT EXISTS users (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT,
-      email TEXT UNIQUE,
-      phone TEXT,
-      vehicleType TEXT,
-      createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
-
-  // Chargers table
-  db.run(`
-    CREATE TABLE IF NOT EXISTS chargers (
-      id TEXT PRIMARY KEY,
-      name TEXT,
-      location TEXT,
-      maxPower REAL,
-      state TEXT DEFAULT 'idle',
-      current REAL DEFAULT 0,
-      temperature REAL DEFAULT 0,
-      pilot REAL DEFAULT 0,
-      rssi INTEGER DEFAULT 0,
-      status TEXT DEFAULT 'offline',
-      lastUpdate DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
-
-  // Bookings table
-  db.run(`
-    CREATE TABLE IF NOT EXISTS bookings (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      userId INTEGER,
-      locationId TEXT,
-      startTime DATETIME,
-      endTime DATETIME,
-      estimatedChargingTime INTEGER,
-      targetSOC INTEGER,
-      status TEXT DEFAULT 'pending',
-      notes TEXT,
-      createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY(userId) REFERENCES users(id),
-      FOREIGN KEY(locationId) REFERENCES chargers(id)
-    )
-  `);
-
-  // Sessions table
-  db.run(`
-    CREATE TABLE IF NOT EXISTS sessions (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      bookingId INTEGER,
-      locationId TEXT,
-      startTime DATETIME,
-      endTime DATETIME,
-      energyDelivered REAL DEFAULT 0,
-      averageCurrent REAL DEFAULT 0,
-      peakTemperature REAL DEFAULT 0,
-      cost REAL DEFAULT 0,
-      FOREIGN KEY(bookingId) REFERENCES bookings(id),
-      FOREIGN KEY(locationId) REFERENCES chargers(id)
-    )
-  `);
-
-  // Insert sample chargers
-  const sampleChargers = [
-    {
-      id: 'locationA',
-      name: 'Charging Station A',
-      location: 'West Footscray Center',
-      maxPower: 7.4,
-      state: '0x02',
-      status: 'online'
-    },
-    {
-      id: 'locationB',
-      name: 'Charging Station B',
-      location: 'Railway Station Area',
-      maxPower: 11,
-      state: '0x02',
-      status: 'online'
-    },
-    {
-      id: 'locationC',
-      name: 'Charging Station C',
-      location: 'Car Park',
-      maxPower: 7.4,
-      state: '0x02',
-      status: 'online'
-    }
-  ];
-
-  sampleChargers.forEach(charger => {
-    db.run(
-      `INSERT OR REPLACE INTO chargers (id, name, location, maxPower, state, status) 
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [charger.id, charger.name, charger.location, charger.maxPower, charger.state, charger.status]
-    );
+// Health check endpoint (no DB needed)
+app.get('/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    timestamp: new Date().toISOString()
   });
-
-  console.log('[DB] Database initialized');
 });
 
-// MQTT Connection (Optional - not required for REST API)
-let mqttConnected = false;
+// Database Setup
+let db = null;
 
 try {
-  const mqtt = require('mqtt');
-  const mqttClient = mqtt.connect('mqtt://localhost:1883', {
-    connectTimeout: 1000,
-    reconnectPeriod: 5000,
-    clientId: 'ev-booking-backend'
-  });
+  db = new sqlite3.Database(':memory:');
+  
+  db.serialize(() => {
+    // Chargers table
+    db.run(`
+      CREATE TABLE IF NOT EXISTS chargers (
+        id TEXT PRIMARY KEY,
+        name TEXT,
+        location TEXT,
+        maxPower REAL,
+        state TEXT DEFAULT 'idle',
+        current REAL DEFAULT 0,
+        temperature REAL DEFAULT 0,
+        pilot REAL DEFAULT 0,
+        rssi INTEGER DEFAULT 0,
+        status TEXT DEFAULT 'offline',
+        lastUpdate DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `, (err) => {
+      if (err) console.error('[DB] Chargers table error:', err);
+    });
 
-  mqttClient.on('connect', () => {
-    console.log('[MQTT] Connected to broker');
-    mqttConnected = true;
-    mqttClient.subscribe('ev/chargers/#');
-  });
+    // Bookings table
+    db.run(`
+      CREATE TABLE IF NOT EXISTS bookings (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        userId INTEGER,
+        locationId TEXT,
+        startTime DATETIME,
+        endTime DATETIME,
+        estimatedChargingTime INTEGER,
+        targetSOC INTEGER,
+        status TEXT DEFAULT 'pending',
+        notes TEXT,
+        createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `, (err) => {
+      if (err) console.error('[DB] Bookings table error:', err);
+    });
 
-  mqttClient.on('message', (topic, message) => {
-    try {
-      const data = JSON.parse(message.toString());
-      const locationId = topic.split('/')[2];
-      
-      if (locationId && data) {
-        db.run(
-          `UPDATE chargers SET state = ?, current = ?, temperature = ?, rssi = ?, status = 'online', lastUpdate = CURRENT_TIMESTAMP 
-           WHERE id = ?`,
-          [data.state || '0x02', data.current || 0, data.temperature || 0, data.rssi || 0, locationId],
-          (err) => {
-            if (err) console.error('[DB] Update error:', err);
-          }
-        );
-      }
-    } catch (err) {
-      console.error('[MQTT] Message parse error:', err);
-    }
-  });
+    // Insert sample chargers
+    const sampleChargers = [
+      { id: 'locationA', name: 'Charging Station A', location: 'West Footscray Center', maxPower: 7.4, state: '0x02', status: 'online' },
+      { id: 'locationB', name: 'Charging Station B', location: 'Railway Station Area', maxPower: 11, state: '0x02', status: 'online' },
+      { id: 'locationC', name: 'Charging Station C', location: 'Car Park', maxPower: 7.4, state: '0x02', status: 'online' }
+    ];
 
-  mqttClient.on('error', (err) => {
-    console.warn('[MQTT] Connection error (optional):', err.message);
-    mqttConnected = false;
-  });
+    sampleChargers.forEach(charger => {
+      db.run(
+        `INSERT OR IGNORE INTO chargers (id, name, location, maxPower, state, status) VALUES (?, ?, ?, ?, ?, ?)`,
+        [charger.id, charger.name, charger.location, charger.maxPower, charger.state, charger.status],
+        (err) => {
+          if (err) console.error('[DB] Insert charger error:', err);
+        }
+      );
+    });
 
-  console.log('[MQTT] Attempting to connect to broker...');
+    console.log('[DB] Database initialized');
+  });
 } catch (err) {
-  console.warn('[MQTT] MQTT not available - REST API only mode');
-  mqttConnected = false;
+  console.error('[DB] Initialization error:', err);
 }
 
-// REST API Routes
+// Home endpoint
+app.get('/', (req, res) => {
+  res.json({
+    name: 'EV Charging Booking System',
+    version: '1.0.0',
+    status: 'running',
+    endpoints: {
+      chargers: '/api/chargers',
+      bookings: '/api/bookings',
+      health: '/health'
+    }
+  });
+});
 
 // Get all chargers
 app.get('/api/chargers', (req, res) => {
+  if (!db) {
+    return res.status(500).json({ success: false, error: 'Database not available' });
+  }
+
   db.all(`
-    SELECT id, name, location, maxPower, state, current, temperature, pilot, rssi, status, lastUpdate
+    SELECT id, name, location, maxPower, state, current, temperature, pilot, rssi, status
     FROM chargers
     ORDER BY name
   `, (err, rows) => {
     if (err) {
-      return res.json({ success: false, error: err.message });
+      console.error('[DB] Query error:', err);
+      return res.status(500).json({ success: false, error: err.message });
     }
     
-    const chargers = rows.map(row => ({
+    const chargers = (rows || []).map(row => ({
       id: row.id,
       name: row.name,
       location: row.location,
@@ -205,14 +153,23 @@ app.get('/api/chargers', (req, res) => {
 
 // Get specific charger
 app.get('/api/chargers/:locationId', (req, res) => {
+  if (!db) {
+    return res.status(500).json({ success: false, error: 'Database not available' });
+  }
+
   const { locationId } = req.params;
   
   db.get(
     `SELECT * FROM chargers WHERE id = ?`,
     [locationId],
     (err, row) => {
-      if (err) return res.json({ success: false, error: err.message });
-      if (!row) return res.json({ success: false, error: 'Charger not found' });
+      if (err) {
+        console.error('[DB] Query error:', err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+      if (!row) {
+        return res.json({ success: false, error: 'Charger not found' });
+      }
       
       res.json({
         success: true,
@@ -235,8 +192,12 @@ app.get('/api/chargers/:locationId', (req, res) => {
   );
 });
 
-// Update charger (for LoRa data)
+// Update charger
 app.post('/api/update-charger', (req, res) => {
+  if (!db) {
+    return res.status(500).json({ success: false, error: 'Database not available' });
+  }
+
   const { locationId, state, current, temperature, rssi } = req.body;
   
   if (!locationId) {
@@ -244,11 +205,13 @@ app.post('/api/update-charger', (req, res) => {
   }
   
   db.run(
-    `UPDATE chargers SET state = ?, current = ?, temperature = ?, rssi = ?, status = 'online', lastUpdate = CURRENT_TIMESTAMP 
-     WHERE id = ?`,
+    `UPDATE chargers SET state = ?, current = ?, temperature = ?, rssi = ?, status = 'online', lastUpdate = CURRENT_TIMESTAMP WHERE id = ?`,
     [state || '0x02', current || 0, temperature || 0, rssi || 0, locationId],
     (err) => {
-      if (err) return res.json({ success: false, error: err.message });
+      if (err) {
+        console.error('[DB] Update error:', err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
       res.json({ success: true, message: 'Charger updated' });
     }
   );
@@ -256,20 +219,26 @@ app.post('/api/update-charger', (req, res) => {
 
 // Get availability
 app.get('/api/availability/:locationId/:date', (req, res) => {
+  if (!db) {
+    return res.status(500).json({ success: false, error: 'Database not available' });
+  }
+
   const { locationId, date } = req.params;
   
   db.all(
-    `SELECT startTime, endTime FROM bookings 
-     WHERE locationId = ? AND DATE(startTime) = ? AND status != 'cancelled'`,
+    `SELECT startTime, endTime FROM bookings WHERE locationId = ? AND DATE(startTime) = ? AND status != 'cancelled'`,
     [locationId, date],
     (err, rows) => {
-      if (err) return res.json({ success: false, error: err.message });
+      if (err) {
+        console.error('[DB] Query error:', err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
       res.json({ success: true, bookings: rows || [] });
     }
   );
 });
 
-// Estimate charging time
+// Estimate charging
 app.post('/api/estimate', (req, res) => {
   const { chargerPower, batteryCapacity, targetSOC, currentSOC } = req.body;
   
@@ -287,6 +256,10 @@ app.post('/api/estimate', (req, res) => {
 
 // Create booking
 app.post('/api/bookings', (req, res) => {
+  if (!db) {
+    return res.status(500).json({ success: false, error: 'Database not available' });
+  }
+
   const { userId, locationId, startTime, endTime, estimatedChargingTime, targetSOC, notes } = req.body;
   
   if (!locationId || !startTime || !endTime) {
@@ -298,7 +271,10 @@ app.post('/api/bookings', (req, res) => {
      VALUES (?, ?, ?, ?, ?, ?, 'confirmed', ?)`,
     [userId || 0, locationId, startTime, endTime, estimatedChargingTime || 60, targetSOC || 80, notes || ''],
     function(err) {
-      if (err) return res.json({ success: false, error: err.message });
+      if (err) {
+        console.error('[DB] Insert error:', err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
       
       res.json({
         success: true,
@@ -309,12 +285,19 @@ app.post('/api/bookings', (req, res) => {
   );
 });
 
-// Get bookings
+// Get all bookings
 app.get('/api/bookings', (req, res) => {
+  if (!db) {
+    return res.status(500).json({ success: false, error: 'Database not available' });
+  }
+
   db.all(
     `SELECT * FROM bookings ORDER BY createdAt DESC`,
     (err, rows) => {
-      if (err) return res.json({ success: false, error: err.message });
+      if (err) {
+        console.error('[DB] Query error:', err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
       res.json({ success: true, data: rows || [] });
     }
   );
@@ -322,14 +305,23 @@ app.get('/api/bookings', (req, res) => {
 
 // Get specific booking
 app.get('/api/bookings/:bookingId', (req, res) => {
+  if (!db) {
+    return res.status(500).json({ success: false, error: 'Database not available' });
+  }
+
   const { bookingId } = req.params;
   
   db.get(
     `SELECT * FROM bookings WHERE id = ?`,
     [bookingId],
     (err, row) => {
-      if (err) return res.json({ success: false, error: err.message });
-      if (!row) return res.json({ success: false, error: 'Booking not found' });
+      if (err) {
+        console.error('[DB] Query error:', err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+      if (!row) {
+        return res.json({ success: false, error: 'Booking not found' });
+      }
       
       res.json({ success: true, data: row });
     }
@@ -338,6 +330,10 @@ app.get('/api/bookings/:bookingId', (req, res) => {
 
 // Update booking
 app.patch('/api/bookings/:bookingId', (req, res) => {
+  if (!db) {
+    return res.status(500).json({ success: false, error: 'Database not available' });
+  }
+
   const { bookingId } = req.params;
   const { status, notes } = req.body;
   
@@ -345,60 +341,40 @@ app.patch('/api/bookings/:bookingId', (req, res) => {
     `UPDATE bookings SET status = ?, notes = ? WHERE id = ?`,
     [status || 'confirmed', notes || '', bookingId],
     (err) => {
-      if (err) return res.json({ success: false, error: err.message });
+      if (err) {
+        console.error('[DB] Update error:', err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
       res.json({ success: true, message: 'Booking updated' });
     }
   );
 });
 
-// Get session
-app.get('/api/sessions/:bookingId', (req, res) => {
-  const { bookingId } = req.params;
-  
-  db.get(
-    `SELECT * FROM sessions WHERE bookingId = ?`,
-    [bookingId],
-    (err, row) => {
-      if (err) return res.json({ success: false, error: err.message });
-      if (!row) return res.json({ success: false, error: 'Session not found' });
-      
-      res.json({ success: true, data: row });
-    }
-  );
+// Error handling
+app.use((err, req, res, next) => {
+  console.error('[Error]', err);
+  res.status(500).json({ success: false, error: err.message });
 });
 
-// Health check
-app.get('/health', (req, res) => {
-  res.json({
-    status: 'ok',
-    mqtt: mqttConnected ? 'connected' : 'optional (not connected)',
-    database: 'ready',
-    timestamp: new Date().toISOString()
-  });
-});
-
-app.get('/', (req, res) => {
-  res.json({
-    name: 'EV Charging Booking System',
-    version: '1.0.0',
-    status: 'running',
-    mqtt: mqttConnected ? 'connected' : 'optional',
-    endpoints: {
-      chargers: '/api/chargers',
-      bookings: '/api/bookings',
-      health: '/health'
-    }
-  });
+// 404 handler
+app.use((req, res) => {
+  res.status(404).json({ success: false, error: 'Endpoint not found' });
 });
 
 // Start server
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`[Server] Running on port ${PORT}`);
-  console.log(`[Server] http://localhost:${PORT}`);
+  console.log(`[Server] CORS enabled for GitHub Pages`);
   console.log('\n✅ Booking API ready!');
 });
 
+server.on('error', (err) => {
+  console.error('[Server] Error:', err);
+  process.exit(1);
+});
+
 process.on('SIGINT', () => {
-  db.close();
+  if (db) db.close();
+  server.close();
   process.exit(0);
 });
